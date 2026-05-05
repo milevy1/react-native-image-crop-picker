@@ -472,7 +472,7 @@ class ImageCropPicker implements ActivityEventListener {
 
         String mime = getMimeType(path);
         if (mime != null && mime.startsWith("video/")) {
-            getVideo(activity, path, mime);
+            getVideo(activity, uri, path, mime);
             return null;
         }
 
@@ -488,7 +488,7 @@ class ImageCropPicker implements ActivityEventListener {
 
         String mime = getMimeType(path);
         if (mime != null && mime.startsWith("video/")) {
-            getVideo(activity, path, mime);
+            getVideo(activity, uri, path, mime);
             return;
         }
 
@@ -519,49 +519,35 @@ class ImageCropPicker implements ActivityEventListener {
         }
     }
 
-    // Returns the video's recording date as a Unix-seconds string, or null if unavailable.
-    // Reads METADATA_KEY_DATE from the QuickTime/MP4 container — the canonical recording
-    // timestamp set by the camera. Format mirrors iOS's `creationDate` (seconds since epoch
-    // as a string) so callers can treat both platforms uniformly.
-    private static String getVideoCreationDateSeconds(String path) {
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        try {
-            retriever.setDataSource(path);
-            String dateStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE);
-            if (dateStr == null || dateStr.isEmpty()) {
+    // MediaStore DATE_TAKEN is the canonical recording timestamp (ms). Preferred over
+    // File.lastModified() (bumped by syncs/copies/edits) for matching iOS PHAsset.creationDate.
+    // Returns Unix seconds as a string to align with the iOS picker's `creationDate` field.
+    private static String getVideoCreationDateSeconds(Activity activity, Uri sourceUri) {
+        if (sourceUri == null) {
+            return null;
+        }
+        try (android.database.Cursor cursor = activity.getContentResolver().query(
+                sourceUri,
+                new String[] { MediaStore.MediaColumns.DATE_TAKEN },
+                null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst()) {
                 return null;
             }
-            // QuickTime container date is typically "yyyyMMdd'T'HHmmss.SSS'Z'" (UTC).
-            // Some encoders emit ISO-8601 "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'" — try common variants.
-            String[] patterns = {
-                    "yyyyMMdd'T'HHmmss.SSS'Z'",
-                    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-                    "yyyyMMdd'T'HHmmss'Z'"
-            };
-            for (String pattern : patterns) {
-                try {
-                    java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(pattern, java.util.Locale.US);
-                    sdf.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
-                    java.util.Date parsed = sdf.parse(dateStr);
-                    if (parsed != null) {
-                        return String.valueOf(parsed.getTime() / 1000L);
-                    }
-                } catch (java.text.ParseException ignored) {
-                    // try next pattern
-                }
+            int idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_TAKEN);
+            if (idx < 0 || cursor.isNull(idx)) {
+                return null;
             }
-            return null;
+            long dateTakenMs = cursor.getLong(idx);
+            if (dateTakenMs <= 0) {
+                return null;
+            }
+            return String.valueOf(dateTakenMs / 1000L);
         } catch (Exception e) {
             return null;
-        } finally {
-            try {
-                retriever.release();
-            } catch (Exception ignored) {
-            }
         }
     }
 
-    private void getVideo(final Activity activity, final String path, final String mime) throws Exception {
+    private void getVideo(final Activity activity, final Uri sourceUri, final String path, final String mime) throws Exception {
         validateVideo(Uri.parse(path));
         final String compressedVideoPath = getTmpDir(activity) + "/" + UUID.randomUUID().toString() + ".mp4";
 
@@ -572,7 +558,7 @@ class ImageCropPicker implements ActivityEventListener {
                 Bitmap bmp = validateVideo(Uri.fromFile(new File(videoPath)));
                 long modificationDate = new File(videoPath).lastModified();
                 long duration = getVideoDuration(videoPath);
-                String creationDateSeconds = getVideoCreationDateSeconds(videoPath);
+                String creationDateSeconds = getVideoCreationDateSeconds(activity, sourceUri);
 
                 WritableMap video = new WritableNativeMap();
                 video.putInt("width", bmp.getWidth());
